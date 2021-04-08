@@ -1,0 +1,199 @@
+---
+
+- name: Populate service facts
+  ansible.builtin.service_facts:
+
+- name: Gather the package facts
+  ansible.builtin.package_facts:
+    manager: auto
+
+# For use with ansible_lsb
+- name: Install redhat-lsb-core
+  ansible.builtin.yum: name=redhat-lsb-core state=present
+  when: "'redhat-lsb-core' not in ansible_facts.packages"
+- name: Reread ansible_lsb facts
+  ansible.builtin.setup: filter=ansible_lsb*
+  when: "'redhat-lsb-core' not in ansible_facts.packages"
+
+- name: Upgrade all packages
+  ansible.builtin.yum:
+    name: '*'
+    state: latest
+
+- name: Install requirements packages
+  ansible.builtin.yum:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - tar
+      - bzip2
+      - make
+      - automake
+      - gcc
+      - gcc-c++
+      - pciutils
+      - elfutils-libelf-devel
+      - libglvnd-devel
+      - iptables
+      - vim
+      - bind-utils
+      - wget
+
+- name: Enable EPEL Repository CentOS
+  ansible.builtin.yum:
+    name: epel-release
+    state: latest
+  when: ansible_distribution == 'CentOS'
+
+- name: Enable EPEL Repository RHEL
+  ansible.builtin.yum:
+    name:
+      - "{{ epel_package }}"
+    state: present
+  when:
+    - ansible_distribution == 'RedHat'
+
+- name: Upgrade all packages (post-EPEL)
+  ansible.builtin.yum:
+    name: '*'
+    state: latest
+
+- name: Add CUDA repo
+  ansible.builtin.yum_repository:
+    name: cuda
+    description: NVIDIA CUDA YUM Repo
+    baseurl: "{{ nvidia_driver_rhel_cuda_repo_baseurl }}"
+    gpgkey: "{{ nvidia_driver_rhel_cuda_repo_gpgkey }}"
+
+- name: ensure we have kernel-headers installed for the current kernel
+  block:
+    - name: attempt to install kernel support packages for current version
+      yum:
+        name:
+          - "kernel-headers-{{ ansible_kernel }}"
+          - "kernel-tools-{{ ansible_kernel }}"
+          - "kernel-tools-libs-{{ ansible_kernel }}"
+          - "kernel-devel-{{ ansible_kernel }}"
+          - "kernel-debug-devel-{{ ansible_kernel }}"
+        state: present
+  rescue:
+    - name: update the kernel to latest version so we have a supported version
+      yum:
+        name:
+          - "kernel"
+          - "kernel-headers"
+          - "kernel-tools"
+          - "kernel-tools-libs"
+          - "kernel-devel"
+          - "kernel-debug-devel"
+        state: latest
+
+# The yum module does not support clearing yum cache in an idempotent way, so it was decided not to implement it,
+# the only method is to use command and call the yum command directly
+- name: Yum clean
+  command: yum clean expire-cache  # noqa command-instead-of-module
+  changed_when: false
+  args:
+    warn: false
+
+- name: Install NVIDIA driver
+  ansible.builtin.yum:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - dkms
+      - nvidia-driver-latest-dkms
+      - kernel-devel
+
+- name: Download nvidia container runtime repo CentOS
+  ansible.builtin.get_url:
+    url: "https://nvidia.github.io/nvidia-container-runtime/{{ ansible_distribution  | lower }}{{ ansible_distribution_version.split('.')[0] }}/nvidia-container-runtime.repo"
+    dest: /etc/yum.repos.d/nvidia-container-runtime.repo
+  when: ansible_distribution == 'CentOS'
+
+- name: Download nvidia container runtime repo RHEL
+  ansible.builtin.get_url:
+    url: "https://nvidia.github.io/nvidia-container-runtime/{{ ansible_distribution  | lower }}{{ ansible_distribution_version.split }}/nvidia-container-runtime.repo"
+    dest: /etc/yum.repos.d/nvidia-container-runtime.repo
+  when: ansible_distribution == 'RedHat'
+
+- name: Install nvidia-container-runtime
+  ansible.builtin.yum:
+    name: nvidia-container-runtime
+    state: latest
+
+- name: Write grub configuration file
+  command: grub2-mkconfig -o /boot/grub2/grub.cfg
+  changed_when: false
+
+- name: Blacklist the nouveau driver module
+  community.general.kernel_blacklist:
+    name: nouveau
+    state: present
+
+- name: Force re-generation of initramfs pt 1/3
+  ansible.builtin.copy:
+    remote_src: true
+    src: "/boot/initramfs-{{ ansible_kernel }}.img"
+    dest: "/boot/initramfs-{{ ansible_kernel }}-nouveau.img"
+
+- name: Force re-generation of initramfs pt 2/3
+  ansible.builtin.file:
+    path: "/boot/initramfs-{{ ansible_architecture }}.img"
+    state: absent
+
+- name: Force re-generation of initramfs pt 3/3
+  ansible.builtin.command:
+    cmd: "dracut /boot/initramfs-{{ ansible_architecture }}.img {{ ansible_architecture }}"
+
+- name: Reboot the machine (Wait for 5 min)
+  reboot:
+    reboot_timeout: 300
+
+- name: verify RKE2 is installed where we expect
+  stat:
+    path: /var/lib/rancher/rke2
+  register: dir_details
+  failed_when: not dir_details.stat.exists
+
+- name: Verify RKE2 is present
+  ansible.builtin.debug:
+    msg: "RKE2 Dir Present"
+  when: dir_details.stat.exists and dir_details.stat.isdir
+
+- name: Verify that RKE2 is installed
+  ansible.builtin.debug:
+    msg: "RKE2 is not installed on this system"
+  when:
+    - ansible_facts.services["rke2-server.service"] is not defined
+    - ansible_facts.services["rke2-agent.service"] is not defined
+
+- name: Create containerD folder if it doesn't exist
+  file:
+    path: /var/lib/rancher/rke2/agent/etc/containerd/
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: create config.toml.tmpl file for containerD
+  copy:
+    src: ./files/config.toml.tmpl
+    dest: /var/lib/rancher/rke2/agent/etc/containerd/config.toml.tmpl
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Restart rke2-server + associated services
+  service:
+    name: rke2-server
+    state: restarted
+    daemon_reload: yes
+  when: ansible_facts.services["rke2-server.service"] is defined
+
+- name: Restart rke2-agent + associated services
+  service:
+    name: rke2-agent
+    state: restarted
+    daemon_reload: yes
+  when: ansible_facts.services["rke2-agent.service"] is defined
