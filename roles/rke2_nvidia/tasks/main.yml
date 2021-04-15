@@ -96,6 +96,22 @@
   args:
     warn: false
 
+- name: Install NVIDIA pre-reqs
+  dnf:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - dkms
+      - kernel-devel
+    state: present
+  when: ansible_facts[‘distribution_major_version’] == '8'
+
+- name: Install NVIDIA driver
+  dnf:
+    name: '@nvidia-driver:latest-dkms'
+    state: present
+  when: ansible_facts[‘distribution_major_version’] == '8'
+
 - name: Install NVIDIA driver
   ansible.builtin.yum:
     name: "{{ packages }}"
@@ -104,7 +120,8 @@
       - dkms
       - nvidia-driver-latest-dkms
       - kernel-devel
-
+  when: ansible_facts[‘distribution_major_version’] == '7'
+  
 - name: Download nvidia container runtime repo CentOS
   ansible.builtin.get_url:
     url: "https://nvidia.github.io/nvidia-container-runtime/{{ ansible_distribution  | lower }}{{ ansible_distribution_version.split('.')[0] }}/nvidia-container-runtime.repo"
