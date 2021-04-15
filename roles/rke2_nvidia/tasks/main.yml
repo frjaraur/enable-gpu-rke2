@@ -120,7 +120,7 @@
       - dkms
       - nvidia-driver-latest-dkms
       - kernel-devel
-  when: ansible_facts[‘distribution_major_version’] == '7'
+  when: ansible_facts['distribution_major_version'] == '7'
 
 - name: Download nvidia container runtime repo CentOS
   ansible.builtin.get_url:
