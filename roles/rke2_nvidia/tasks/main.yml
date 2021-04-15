@@ -161,7 +161,7 @@
 
 - name: Force re-generation of initramfs pt 3/3
   ansible.builtin.command:
-    cmd: "dracut /boot/initramfs-{{ ansible_architecture }}.img {{ ansible_architecture }}"
+    cmd: "dracut /boot/initramfs-{{ ansible_kernel }}.img {{ ansible_kernel }}"
 
 - name: Reboot the machine (Wait for 5 min)
   reboot:
