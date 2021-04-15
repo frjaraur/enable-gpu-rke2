@@ -144,7 +144,7 @@
   changed_when: false
 
 - name: Blacklist the nouveau driver module
-  community.general.kernel_blacklist:
+  kernel_blacklist:
     name: nouveau
     state: present
 
